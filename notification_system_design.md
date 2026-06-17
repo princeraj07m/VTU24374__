@@ -546,3 +546,32 @@ Helpful index for this report query:
 CREATE INDEX idx_notifications_type_created_student
 ON notifications (notificationType, createdAt DESC, studentID);
 ```
+
+---
+
+# Stage 4
+
+## Problem
+
+Right now notifications are fetched from DB on every page load for every student.
+So DB gets too many repeated reads.
+Because of that app becomes slow.
+
+## What I suggest
+
+Use these:
+- pagination + limit (small response)
+- cursor pagination for deep pages (no heavy skip)
+- short cache for hot APIs (15-30 sec)
+- SSE/WebSocket (stop frequent polling)
+- proper indexes + selected fields only
+- archive old records if table grows too much
+
+---
+
+## Final approach I would implement first
+
+Phase 1: indexes + cursor pagination + cache + SSE.
+Phase 2: read replica + archive old data.
+
+Tradeoff in one line: better speed and DB load, but added infra/complexity.
