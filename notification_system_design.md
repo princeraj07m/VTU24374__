@@ -575,3 +575,89 @@ Phase 1: indexes + cursor pagination + cache + SSE.
 Phase 2: read replica + archive old data.
 
 Tradeoff in one line: better speed and DB load, but added infra/complexity.
+
+---
+
+# Stage 5
+
+## Problems in given pseudocode
+
+- single loop for 50,000 users is too slow
+- if `send_email` fails mid-way, data becomes inconsistent
+- no retry, no queue, no failure tracking
+- direct DB insert one-by-one is heavy
+- no idempotency, can send duplicate notifications
+
+## What happened when email failed for 200 users
+
+- some got email + app notification
+- some got only DB entry
+- some got nothing
+- system state is partial/inconsistent
+
+## Better design
+
+- save notifications to DB first in bulk (`insertMany`)
+- push email/app tasks to queue (Kafka/RabbitMQ/Bull)
+- workers process tasks in parallel with retry + dead letter queue
+- keep `status` fields: `pending`, `sent`, `failed`
+- use idempotency key to avoid duplicate send
+
+## Should DB save and email happen together?
+
+No, not in one blocking transaction for all 50k.
+
+Reason:
+- email API is external and can fail/timeout
+- long transaction is risky and expensive
+- better to do reliable async processing using queue
+
+## Revised pseudocode
+
+```python
+function notify_all(student_ids, message):
+    event_id = generate_uuid()
+
+    # Step 1: bulk save notification records
+    docs = []
+    for student_id in student_ids:
+        docs.append({
+            "event_id": event_id,
+            "student_id": student_id,
+            "message": message,
+            "notification_type": "Placement",
+            "is_read": false,
+            "email_status": "pending",
+            "app_status": "pending",
+            "created_at": now()
+        })
+    db.notifications.insert_many(docs)
+
+    # Step 2: push jobs to queue
+    for student_id in student_ids:
+        queue.publish("send_notification", {
+            "event_id": event_id,
+            "student_id": student_id,
+            "message": message
+        })
+
+
+worker send_notification(job):
+    # idempotency check
+    if db.delivery_log.exists(job.event_id, job.student_id):
+        return
+
+    email_ok = send_email(job.student_id, job.message)
+    app_ok = push_to_app(job.student_id, job.message)
+
+    db.notifications.update_one(
+        {"event_id": job.event_id, "student_id": job.student_id},
+        {"$set": {
+            "email_status": "sent" if email_ok else "failed",
+            "app_status": "sent" if app_ok else "failed"
+        }}
+    )
+
+    if not email_ok or not app_ok:
+        retry_with_backoff(job)   # max retry limit
+```
