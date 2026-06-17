@@ -278,3 +278,165 @@ Status codes:
 - 400 - bad request
 - 404 - not found
 - 500 - server error
+
+---
+
+# Stage 2
+
+## DB choice
+
+I will use **MongoDB** because notification data is already in JSON format and we need simple filter + sort + search.
+
+## Collection + fields
+
+Collection: `notifications`
+
+```json
+{
+  "student_id": "string",
+  "notification_type": "Placement | Result | Event",
+  "message": "string",
+  "timestamp": "Date",
+  "is_read": false
+}
+```
+
+## Indexes (to keep it fast)
+
+```js
+db.notifications.createIndex({ notification_type: 1, timestamp: -1 })
+db.notifications.createIndex({ timestamp: -1 })
+db.notifications.createIndex({ message: "text" })
+```
+
+## Issues when data grows (5 lakh+)
+
+- without indexes filter/sort becomes slow
+- big page number with `skip()` becomes slow
+- regex search becomes slow
+- DB size keeps growing
+
+## Fix
+
+- keep indexes
+- return only required fields in API
+- use text index for search
+- for very deep pagination use cursor idea (timestamp based) instead of big skip
+- archive old notifications if needed
+
+---
+
+## Queries based on our REST APIs
+
+### 1) GET /notifications?page=1&limit=10&notification_type=Placement&search=drive
+
+Mongo query:
+
+```js
+const page = 1
+const limit = 10
+const skip = (page - 1) * limit
+
+db.notifications.find(
+  {
+    notification_type: "Placement",
+    $text: { $search: "drive" }
+  },
+  {
+    notification_type: 1,
+    message: 1,
+    timestamp: 1
+  }
+)
+.sort({ score: { $meta: "textScore" }, timestamp: -1 })
+.skip(skip)
+.limit(limit)
+```
+
+Total count for pagination:
+
+```js
+db.notifications.countDocuments({
+  notification_type: "Placement",
+  $text: { $search: "drive" }
+})
+```
+
+### 2) GET /notifications?page=1&limit=10 (no filter, no search)
+
+```js
+db.notifications.find(
+  {},
+  { notification_type: 1, message: 1, timestamp: 1 }
+)
+.sort({ timestamp: -1 })
+.skip(0)
+.limit(10)
+```
+
+### 3) GET /notifications/priority
+
+Priority order: Placement -> Result -> Event
+
+Query idea (latest 5 each):
+
+```js
+const limit = 5
+
+const placement = db.notifications.find(
+  { notification_type: "Placement" },
+  { notification_type: 1, message: 1, timestamp: 1 }
+).sort({ timestamp: -1 }).limit(limit).toArray()
+
+const result = db.notifications.find(
+  { notification_type: "Result" },
+  { notification_type: 1, message: 1, timestamp: 1 }
+).sort({ timestamp: -1 }).limit(limit).toArray()
+
+const event = db.notifications.find(
+  { notification_type: "Event" },
+  { notification_type: 1, message: 1, timestamp: 1 }
+).sort({ timestamp: -1 }).limit(limit).toArray()
+
+// then return placement + result + event in same order
+```
+
+### 4) PATCH /notifications/:id/read
+
+```js
+db.notifications.updateOne(
+  { _id: ObjectId("665f1a2b3c4d5e6f7a8b9c0d") },
+  { $set: { is_read: true } }
+)
+```
+
+### 5) PATCH /notifications/read-all
+
+```js
+db.notifications.updateMany(
+  { student_id: "VTU24374", is_read: false },
+  { $set: { is_read: true } }
+)
+```
+
+---
+
+## Cursor pagination idea (for large page numbers)
+
+Instead of big `skip()`, frontend can send last timestamp.
+
+Example:
+```
+GET /notifications?limit=10&before=2026-06-17T10:00:00.000Z
+```
+
+Mongo query:
+
+```js
+db.notifications.find(
+  { timestamp: { $lt: new Date("2026-06-17T10:00:00.000Z") } },
+  { notification_type: 1, message: 1, timestamp: 1 }
+)
+.sort({ timestamp: -1 })
+.limit(10)
+```
