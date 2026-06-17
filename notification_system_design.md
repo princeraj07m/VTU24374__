@@ -661,3 +661,67 @@ worker send_notification(job):
     if not email_ok or not app_ok:
         retry_with_backoff(job)   # max retry limit
 ```
+
+---
+
+# Stage 6
+
+## Auth setup (evaluation service)
+
+Evaluation APIs are protected. We need Bearer token.
+
+My details:
+- email: princerajm31@gmail.com
+- name: prince kumar
+- rollNo: vtu24374
+- accessCode: juFphv
+- clientID + clientSecret from evaluation portal
+
+Token response:
+```json
+{
+  "token_type": "Bearer",
+  "access_token": "<token>",
+  "expires_in": 1781673474
+}
+```
+
+## Where I stored it
+
+`logging-middleware/.env`
+```
+LOGGING_SERVICE_TOKEN=<access_token>
+CLIENT_ID=...
+CLIENT_SECRET=...
+ACCESS_CODE=...
+ROLL_NO=...
+EMAIL=...
+NAME=...
+```
+
+Also added `LOGGING_SERVICE_TOKEN` in `notification-app-be/.env` because backend runs from that folder.
+
+## How logging middleware uses token
+
+```js
+Authorization: Bearer ${process.env.LOGGING_SERVICE_TOKEN}
+```
+
+POST: `http://4.224.186.213/evaluation-service/logs`
+
+Body:
+```json
+{
+  "stack": "function/module name",
+  "level": "info | error",
+  "package": "notification-app-be",
+  "message": "log message"
+}
+```
+
+## Usage in backend
+
+- global middleware logs every HTTP request
+- controller functions call `log()` on each API function
+
+No `console.log` used in app code.
