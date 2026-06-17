@@ -440,3 +440,109 @@ db.notifications.find(
 .sort({ timestamp: -1 })
 .limit(10)
 ```
+
+---
+
+# Stage 3
+
+## Given query
+
+```sql
+SELECT * FROM notifications
+WHERE studentID = 1042 AND isRead = false
+ORDER BY createdAt ASC;
+```
+
+## Is this query accurate?
+
+Partly yes.
+
+- it fetches unread notifications for one student
+- it sorts by created date
+
+But it is not ideal:
+- `SELECT *` pulls all columns, more data than needed
+- if API needs latest first, then `ASC` may be wrong (usually we show latest first)
+
+## Why it is slow
+
+With 5,000,000 rows, without proper index DB does large scan + sort.
+
+Main reasons:
+- no composite index for filter + sort
+- `SELECT *` causes extra IO
+- sorting huge matched rows is costly
+
+## Better query
+
+```sql
+SELECT id, studentID, notificationType, message, createdAt, isRead
+FROM notifications
+WHERE studentID = 1042
+  AND isRead = false
+ORDER BY createdAt DESC
+LIMIT 50 OFFSET 0;
+```
+
+## Index to add
+
+Best index for this query:
+
+```sql
+CREATE INDEX idx_notifications_student_read_created
+ON notifications (studentID, isRead, createdAt DESC);
+```
+
+Why this works:
+- first 2 columns filter fast (`studentID`, `isRead`)
+- then index order helps `ORDER BY createdAt`
+- DB avoids full table scan + heavy sort
+
+## Likely cost impact
+
+Without index:
+- almost full scan behavior in big table
+- high CPU + high disk read
+
+With index:
+- index range scan on matching student unread rows
+- very less rows touched
+- much faster response (usually huge drop in latency)
+
+## Should we add index on every column?
+
+No. Not good.
+
+Problems with too many indexes:
+- insert/update becomes slower (every index must be updated)
+- storage usage increases
+- query planner may choose bad index sometimes
+- unnecessary maintenance cost
+
+Rule:
+- add index based on real query pattern, not on every column
+
+## Find all students who got placement notifications in last 7 days
+
+```sql
+SELECT DISTINCT studentID
+FROM notifications
+WHERE notificationType = 'Placement'
+  AND createdAt >= NOW() - INTERVAL '7 days';
+```
+
+If using MySQL syntax:
+
+```sql
+SELECT DISTINCT studentID
+FROM notifications
+WHERE notificationType = 'Placement'
+  AND createdAt >= NOW() - INTERVAL 7 DAY;
+```
+
+Helpful index for this report query:
+
+```sql
+CREATE INDEX idx_notifications_type_created_student
+ON notifications (notificationType, createdAt DESC, studentID);
+```
